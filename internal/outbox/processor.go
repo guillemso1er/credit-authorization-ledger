@@ -7,6 +7,7 @@ import (
 
 	"credit-authorization-ledger/internal/kafka"
 
+	"github.com/lib/pq"
 	"go.opentelemetry.io/otel"
 )
 
