@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: credit_ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8000:8000"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  localstack:
+    image: localstack/localstack:0.14.2
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs,sns
+      - DEFAULT_REGION=us-east-1
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./app", "api-gateway"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      - kafka
+      - dynamodb
+
+  authorization-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./app", "authorization-service"]
+    depends_on:
+      - postgres
+      - kafka
+
+  ledger-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./app", "ledger-service"]
+    depends_on:
+      - postgres
+      - kafka
+
+  outbox-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./app", "outbox-processor"]
+    depends_on:
+      - postgres
+      - kafka
+
+  saga-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./app", "saga-orchestrator"]
+    depends_on:
+      - kafka
+
+volumes:
+  postgres_data:
