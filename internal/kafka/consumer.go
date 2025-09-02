@@ -14,32 +14,63 @@ type Consumer struct {
 }
 
 func NewConsumer(brokers []string, groupID string) *Consumer {
+	// Topics are now set in the Consume method
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
 		GroupID: groupID,
-		// Topics will be specified in the Consume method
 	})
 	return &Consumer{reader: reader}
 }
 
-func (c *Consumer) Consume(topics []string, handler MessageHandler) {
-	c.reader.Config().Topic = topics[0] // Simplified for single topic, adjust for multi-topic
-	if len(topics) > 1 {
-		// The library supports this, but our simple loop needs adjustment.
-		// For a real app, you might run a goroutine per topic or use a different consumption pattern.
-		log.Println("Warning: This consumer is simplified for a single topic from the list.")
-	}
+// Consume starts consuming messages from the given topics.
+// It takes a context to allow for graceful shutdown.
+func (c *Consumer) Consume(ctx context.Context, topics []string, handler MessageHandler) {
+	// The kafka-go reader can handle multiple topics if you list them at creation,
+	// but a better pattern for distinct logic is separate consumers.
+	// For this SAGA orchestrator where one handler manages multiple topics, this is okay.
+	// We'll reconfigure the reader for the topics it needs to consume.
+	c.reader.Close() // Close previous config if any
+	c.reader = kafka.NewReader(kafka.ReaderConfig{
+		Brokers: c.reader.Config().Brokers,
+		GroupID: c.reader.Config().GroupID,
+		GroupTopics: topics,
+		MinBytes:    10e3, // 10KB
+		MaxBytes:    10e6, // 10MB
+	})
 
+
+	log.Printf("Consumer started for topics: %v", topics)
 	for {
-		msg, err := c.reader.ReadMessage(context.Background())
-		if err != nil {
-			log.Printf("error reading message: %v", err)
-			break
-		}
-		log.Printf("message received: Topic=%s, Key=%s", msg.Topic, string(msg.Key))
-		if err := handler(context.Background(), msg); err != nil {
-			log.Printf("error handling message: %v", err)
-			// Implement retry/DLQ logic here if needed at the consumer level
+		select {
+		case <-ctx.Done():
+			// Context was cancelled, indicating a shutdown.
+			log.Println("Shutdown signal received, stopping consumer.")
+			return
+		default:
+			// Use FetchMessage which respects context cancellation.
+			msg, err := c.reader.FetchMessage(ctx)
+			if err != nil {
+				// If context is cancelled, reader will return an error. Check for it.
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("error fetching message: %v", err)
+				continue // Or break, depending on desired behavior for errors
+			}
+
+			log.Printf("message received: Topic=%s, Key=%s", msg.Topic, string(msg.Key))
+
+			// Process the message
+			if err := handler(ctx, msg); err != nil {
+				log.Printf("error handling message: %v", err)
+				// In a real app, decide whether to commit or not based on the error.
+				// For now, we continue and let the next message be read.
+			}
+
+			// Commit the message offset.
+			if err := c.reader.CommitMessages(ctx, msg); err != nil {
+				log.Printf("failed to commit message: %v", err)
+			}
 		}
 	}
 }
