@@ -29,6 +29,7 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -49,7 +50,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./app", "api-gateway"]
+      args:
+        service: api-gateway
     ports:
       - "8080:8080"
     depends_on:
@@ -60,7 +62,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./app", "authorization-service"]
+      args:
+        service: authorization-service
     depends_on:
       - postgres
       - kafka
@@ -69,7 +72,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./app", "ledger-service"]
+      args:
+        service: ledger-service
     depends_on:
       - postgres
       - kafka
@@ -78,7 +82,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./app", "outbox-processor"]
+      args:
+        service: outbox-processor
     depends_on:
       - postgres
       - kafka
@@ -87,7 +92,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./app", "saga-orchestrator"]
+      args:
+        service: saga-orchestrator
     depends_on:
       - kafka
 
