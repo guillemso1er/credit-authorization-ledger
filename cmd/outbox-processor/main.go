@@ -5,20 +5,18 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"credit-authorization-ledger/internal/config"
 	"credit-authorization-ledger/internal/database"
 	"credit-authorization-ledger/internal/kafka"
-	"credit-authorization-ledger/internal/ledger"
+	"credit-authorization-ledger/internal/outbox"
 	"credit-authorization-ledger/internal/tracing"
-
-	"go.opentelemetry.io/otel"
 )
 
 func main() {
 	cfg := config.Load()
-	tracer := tracing.InitTracer("ledger-service")
-	otel.SetTracerProvider(tracer)
+	tracing.InitTracer("outbox-processor")
 
 	db, err := database.NewPostgres(cfg.PostgresURL)
 	if err != nil {
@@ -26,23 +24,35 @@ func main() {
 	}
 	defer db.Close()
 
-	// Run database migrations for the ledger service
-	database.RunMigrations(db, "internal/ledger/migrations")
+	// The outbox table migration is run by other services, but it could be run here too for standalone safety.
+	// database.RunMigrations(db, "internal/database/migrations")
 
-	ledgerService := ledger.NewService(db)
+	kafkaProducer, err := kafka.NewProducer(cfg.KafkaBrokers)
+	if err != nil {
+		log.Fatalf("failed to create kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
 
-	kafkaConsumer := kafka.NewConsumer(cfg.KafkaBrokers, "ledger-group")
-	defer kafkaConsumer.Close()
+	processor := outbox.NewProcessor(db, kafkaProducer)
 
-	// Subscribe to the topic where successful authorizations are published
-	go kafkaConsumer.Consume([]string{"authorization-succeeded"}, ledgerService.HandleCreditLedger)
+	// Use a ticker to periodically process messages
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-	log.Println("Ledger service started...")
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	// Graceful shutdown
-	sigterm := make(chan os.Signal, 1)
-	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
-	<-sigterm
+	log.Println("Outbox processor started...")
 
-	log.Println("Ledger service shutting down...")
+	for {
+		select {
+		case <-ticker.C:
+			if err := processor.ProcessOutboxMessages(); err != nil {
+				log.Printf("error processing outbox messages: %v", err)
+			}
+		case <-shutdown:
+			log.Println("Outbox processor shutting down...")
+			return
+		}
+	}
 }
